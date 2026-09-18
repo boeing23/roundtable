@@ -1,0 +1,69 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+/* --- small component classes --- */
+.input {
+  @apply rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent px-3 py-2 text-sm outline-none focus:border-zinc-500;
+}
+.btn-primary {
+  @apply rounded-lg bg-foreground text-background px-3 py-2 text-sm font-medium disabled:opacity-40;
+}
+.btn-ghost {
+  @apply rounded-lg px-2.5 py-1.5 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-900 disabled:opacity-40;
+}
+.chip {
+  @apply inline-flex items-center rounded-full border border-zinc-300 dark:border-zinc-700 px-2 py-0.5 text-xs;
+}
+
+/* --- markdown --- */
+.md {
+  @apply text-sm leading-relaxed;
+}
+.md > * + * {
+  @apply mt-2;
+}
+.md h1, .md h2, .md h3 {
+  @apply font-semibold mt-4;
+}
+.md h1 { @apply text-base; }
+.md h2 { @apply text-[15px]; }
+.md h3 { @apply text-sm; }
+.md ul { @apply list-disc pl-5; }
+.md ol { @apply list-decimal pl-5; }
+.md li + li { @apply mt-1; }
+.md code {
+  @apply font-mono text-[13px] rounded bg-zinc-100 dark:bg-zinc-900 px-1 py-0.5;
+}
+.md pre {
+  @apply rounded-lg bg-zinc-100 dark:bg-zinc-900 p-3 overflow-x-auto;
+}
+.md pre code { @apply bg-transparent p-0; }
+.md blockquote { @apply border-l-2 border-zinc-300 dark:border-zinc-700 pl-3 text-zinc-600 dark:text-zinc-400; }
+.md table { @apply text-xs border-collapse; }
+.md th, .md td { @apply border border-zinc-200 dark:border-zinc-800 px-2 py-1 align-top; }
+.md a { @apply underline; }
+.md hr { @apply border-zinc-200 dark:border-zinc-800; }
