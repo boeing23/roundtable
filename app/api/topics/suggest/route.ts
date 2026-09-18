@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { listBuckets } from "@/lib/db";
 import { utilityModel } from "@/lib/models";
 import { completeModel } from "@/lib/providers";
+import { currentUser } from "@/lib/user";
 
 /**
  * POST { title } -> { ids: string[] } of past buckets likely relevant to a new topic.
@@ -9,7 +10,7 @@ import { completeModel } from "@/lib/providers";
  */
 export async function POST(req: Request) {
   const { title } = (await req.json()) as { title: string };
-  const buckets = listBuckets();
+  const buckets = listBuckets(currentUser(req));
   if (!title?.trim() || buckets.length === 0) return NextResponse.json({ ids: [] });
 
   const catalog = buckets

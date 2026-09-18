@@ -4,6 +4,7 @@ import { getMessage, getTopic, insertMessage, updateMessageContent } from "@/lib
 import { getModel, isAvailable } from "@/lib/models";
 import { streamModel } from "@/lib/providers";
 import { ERROR_MARK } from "@/lib/stream";
+import { currentUser } from "@/lib/user";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -14,7 +15,8 @@ type Ctx = { params: Promise<{ id: string }> };
  */
 export async function POST(req: Request, { params }: Ctx) {
   const { id } = await params;
-  const topic = getTopic(id);
+  const owner = currentUser(req);
+  const topic = getTopic(id, owner);
   if (!topic) return NextResponse.json({ error: "not found" }, { status: 404 });
 
   const { model_id, turn_id } = (await req.json()) as { model_id: string; turn_id?: string };
@@ -43,7 +45,7 @@ export async function POST(req: Request, { params }: Ctx) {
 
   let ctx: Awaited<ReturnType<typeof buildContext>>;
   try {
-    ctx = await buildContext(id, model_id);
+    ctx = await buildContext(id, owner, model_id);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     updateMessageContent(row.id, "", msg);

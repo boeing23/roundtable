@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { DEFAULT_OWNER } from "./user";
 
 // ---------- types ----------
 
@@ -9,6 +10,7 @@ export type TopicStatus = "open" | "closed";
 
 export type Topic = {
   id: string;
+  owner: string;
   title: string;
   status: TopicStatus;
   context_topic_ids: string[]; // related topics whose buckets are pulled into context
@@ -75,6 +77,7 @@ const DB_PATH = process.env.MEDIATION_DB ?? path.join(process.cwd(), "data", "me
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS topics (
   id TEXT PRIMARY KEY,
+  owner TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'open',
   context_topic_ids TEXT NOT NULL DEFAULT '[]',
@@ -95,7 +98,6 @@ CREATE TABLE IF NOT EXISTS messages (
   error TEXT,
   created_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS messages_topic ON messages(topic_id, created_at);
 CREATE TABLE IF NOT EXISTS summaries (
   id TEXT PRIMARY KEY,
   topic_id TEXT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
@@ -113,12 +115,15 @@ CREATE TABLE IF NOT EXISTS compactions (
   PRIMARY KEY (topic_id, model_id)
 );
 CREATE TABLE IF NOT EXISTS profile_sources (
-  source TEXT PRIMARY KEY,
+  owner TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL,
   raw TEXT NOT NULL DEFAULT '',
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (owner, source)
 );
 CREATE TABLE IF NOT EXISTS profile_facts (
   id TEXT PRIMARY KEY,
+  owner TEXT NOT NULL DEFAULT '',
   position INTEGER NOT NULL,
   text TEXT NOT NULL,
   category TEXT NOT NULL,
@@ -127,6 +132,45 @@ CREATE TABLE IF NOT EXISTS profile_facts (
 );
 `;
 
+// Created after migrate(), since they reference columns older databases lack.
+const INDEXES = `
+CREATE INDEX IF NOT EXISTS topics_owner ON topics(owner, updated_at);
+CREATE INDEX IF NOT EXISTS messages_topic ON messages(topic_id, created_at);
+CREATE INDEX IF NOT EXISTS profile_facts_owner ON profile_facts(owner, position);
+`;
+
+/** Bring a database created before per-user workspaces up to the current shape. */
+function migrate(conn: Database.Database): void {
+  const columns = (table: string) =>
+    conn.prepare<[], { name: string }>(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+
+  for (const table of ["topics", "profile_facts"]) {
+    if (!columns(table).includes("owner")) {
+      conn.exec(`ALTER TABLE ${table} ADD COLUMN owner TEXT NOT NULL DEFAULT ''`);
+    }
+  }
+  // profile_sources gains a composite primary key, which needs a table rebuild.
+  if (!columns("profile_sources").includes("owner")) {
+    conn.exec(`
+      ALTER TABLE profile_sources RENAME TO profile_sources_old;
+      CREATE TABLE profile_sources (
+        owner TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL,
+        raw TEXT NOT NULL DEFAULT '',
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (owner, source)
+      );
+      INSERT INTO profile_sources (owner, source, raw, updated_at)
+        SELECT '', source, raw, updated_at FROM profile_sources_old;
+      DROP TABLE profile_sources_old;
+    `);
+  }
+  // Pre-existing rows belong to whoever was using the app before it had users.
+  for (const table of ["topics", "profile_facts", "profile_sources"]) {
+    conn.prepare(`UPDATE ${table} SET owner = ? WHERE owner = ''`).run(DEFAULT_OWNER);
+  }
+}
+
 function open(): Database.Database {
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
   const conn = new Database(DB_PATH);
@@ -134,6 +178,8 @@ function open(): Database.Database {
   conn.pragma("journal_mode = WAL");
   conn.pragma("foreign_keys = ON");
   conn.exec(SCHEMA);
+  migrate(conn);
+  conn.exec(INDEXES);
   return conn;
 }
 
@@ -145,6 +191,8 @@ export function getDb(): Database.Database {
   // A hot-reloaded module may carry new tables; the cached connection wouldn't have them.
   if (g.__mediationSchema !== SCHEMA) {
     conn.exec(SCHEMA);
+    migrate(conn);
+    conn.exec(INDEXES);
     g.__mediationSchema = SCHEMA;
   }
   return conn;
@@ -176,45 +224,53 @@ const rowToMessage = (r: MessageRow): Message => ({
 });
 
 // ---------- topics ----------
+// Every read and write is scoped to an owner: one person cannot see or touch
+// another's topics, and everything else hangs off a topic.
 
-export function listTopics(): Topic[] {
+export function listTopics(owner: string): Topic[] {
   return getDb()
-    .prepare<[], TopicRow>("SELECT * FROM topics ORDER BY updated_at DESC")
-    .all()
+    .prepare<[string], TopicRow>("SELECT * FROM topics WHERE owner = ? ORDER BY updated_at DESC")
+    .all(owner)
     .map(rowToTopic);
 }
 
-export function getTopic(id: string): Topic | null {
-  const r = getDb().prepare<[string], TopicRow>("SELECT * FROM topics WHERE id = ?").get(id);
+export function getTopic(id: string, owner: string): Topic | null {
+  const r = getDb()
+    .prepare<[string, string], TopicRow>("SELECT * FROM topics WHERE id = ? AND owner = ?")
+    .get(id, owner);
   return r ? rowToTopic(r) : null;
 }
 
-export function createTopic(title: string, contextTopicIds: string[] = []): Topic {
+export function createTopic(owner: string, title: string, contextTopicIds: string[] = []): Topic {
   const now = Date.now();
   const t: Topic = {
     id: randomUUID(),
+    owner,
     title: title.trim() || "Untitled topic",
     status: "open",
     context_topic_ids: contextTopicIds,
     created_at: now,
     updated_at: now,
   };
-  getDb().prepare(
-    "INSERT INTO topics (id, title, status, context_topic_ids, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-  ).run(t.id, t.title, t.status, JSON.stringify(t.context_topic_ids), now, now);
+  getDb()
+    .prepare(
+      "INSERT INTO topics (id, owner, title, status, context_topic_ids, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .run(t.id, t.owner, t.title, t.status, JSON.stringify(t.context_topic_ids), now, now);
   return t;
 }
 
 export function updateTopic(
   id: string,
+  owner: string,
   patch: Partial<Pick<Topic, "title" | "status" | "context_topic_ids">>,
 ): Topic | null {
-  const cur = getTopic(id);
+  const cur = getTopic(id, owner);
   if (!cur) return null;
   const next = { ...cur, ...patch, updated_at: Date.now() };
-  getDb().prepare(
-    "UPDATE topics SET title = ?, status = ?, context_topic_ids = ?, updated_at = ? WHERE id = ?",
-  ).run(next.title, next.status, JSON.stringify(next.context_topic_ids), next.updated_at, id);
+  getDb()
+    .prepare("UPDATE topics SET title = ?, status = ?, context_topic_ids = ?, updated_at = ? WHERE id = ? AND owner = ?")
+    .run(next.title, next.status, JSON.stringify(next.context_topic_ids), next.updated_at, id, owner);
   return next;
 }
 
@@ -222,8 +278,8 @@ export function touchTopic(id: string): void {
   getDb().prepare("UPDATE topics SET updated_at = ? WHERE id = ?").run(Date.now(), id);
 }
 
-export function deleteTopic(id: string): void {
-  getDb().prepare("DELETE FROM topics WHERE id = ?").run(id);
+export function deleteTopic(id: string, owner: string): void {
+  getDb().prepare("DELETE FROM topics WHERE id = ? AND owner = ?").run(id, owner);
 }
 
 // ---------- messages ----------
@@ -251,23 +307,25 @@ export function insertMessage(
     error: m.error ?? null,
     created_at: Date.now(),
   };
-  getDb().prepare(
-    `INSERT INTO messages (id, topic_id, channel, role, model_id, turn_id, content, attachments, asked, shared, error, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    full.id,
-    full.topic_id,
-    full.channel,
-    full.role,
-    full.model_id,
-    full.turn_id,
-    full.content,
-    JSON.stringify(full.attachments),
-    JSON.stringify(full.asked),
-    JSON.stringify(full.shared),
-    full.error,
-    full.created_at,
-  );
+  getDb()
+    .prepare(
+      `INSERT INTO messages (id, topic_id, channel, role, model_id, turn_id, content, attachments, asked, shared, error, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      full.id,
+      full.topic_id,
+      full.channel,
+      full.role,
+      full.model_id,
+      full.turn_id,
+      full.content,
+      JSON.stringify(full.attachments),
+      JSON.stringify(full.asked),
+      JSON.stringify(full.shared),
+      full.error,
+      full.created_at,
+    );
   touchTopic(full.topic_id);
   return full;
 }
@@ -304,15 +362,17 @@ export function insertSummary(topicId: string, summary: string, decision: string
     decision,
     created_at: Date.now(),
   };
-  getDb().prepare(
-    "INSERT INTO summaries (id, topic_id, version, summary, decision, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-  ).run(s.id, s.topic_id, s.version, s.summary, s.decision, s.created_at);
+  getDb()
+    .prepare(
+      "INSERT INTO summaries (id, topic_id, version, summary, decision, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .run(s.id, s.topic_id, s.version, s.summary, s.decision, s.created_at);
   return s;
 }
 
-/** Every topic that has at least one summary, with its latest summary and outgoing links. */
-export function listBuckets(): Bucket[] {
-  return listTopics()
+/** Every topic of this owner that has a summary, with its latest one and outgoing links. */
+export function listBuckets(owner: string): Bucket[] {
+  return listTopics(owner)
     .map((t) => ({ ...t, latest: latestSummary(t.id), links: t.context_topic_ids }))
     .filter((b) => b.latest !== null);
 }
@@ -330,50 +390,57 @@ export function getCompaction(topicId: string, modelId: string): Compaction | nu
 }
 
 export function upsertCompaction(c: Omit<Compaction, "updated_at">): void {
-  getDb().prepare(
-    `INSERT INTO compactions (topic_id, model_id, summary, through, updated_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(topic_id, model_id) DO UPDATE SET summary = excluded.summary, through = excluded.through, updated_at = excluded.updated_at`,
-  ).run(c.topic_id, c.model_id, c.summary, c.through, Date.now());
+  getDb()
+    .prepare(
+      `INSERT INTO compactions (topic_id, model_id, summary, through, updated_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(topic_id, model_id) DO UPDATE SET summary = excluded.summary, through = excluded.through, updated_at = excluded.updated_at`,
+    )
+    .run(c.topic_id, c.model_id, c.summary, c.through, Date.now());
 }
 
 // ---------- profile ("about me") ----------
 
-export function getProfileSources(): Record<string, string> {
-  const rows = getDb().prepare<[], { source: string; raw: string }>("SELECT source, raw FROM profile_sources").all();
+export function getProfileSources(owner: string): Record<string, string> {
+  const rows = getDb()
+    .prepare<[string], { source: string; raw: string }>("SELECT source, raw FROM profile_sources WHERE owner = ?")
+    .all(owner);
   return Object.fromEntries(rows.map((r) => [r.source, r.raw]));
 }
 
-export function setProfileSource(source: string, raw: string): void {
+export function setProfileSource(owner: string, source: string, raw: string): void {
   getDb()
     .prepare(
-      `INSERT INTO profile_sources (source, raw, updated_at) VALUES (?, ?, ?)
-       ON CONFLICT(source) DO UPDATE SET raw = excluded.raw, updated_at = excluded.updated_at`,
+      `INSERT INTO profile_sources (owner, source, raw, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(owner, source) DO UPDATE SET raw = excluded.raw, updated_at = excluded.updated_at`,
     )
-    .run(source, raw, Date.now());
+    .run(owner, source, raw, Date.now());
 }
 
-export function listProfileFacts(): ProfileFact[] {
+export function listProfileFacts(owner: string): ProfileFact[] {
   return getDb()
-    .prepare<[], Omit<ProfileFact, "sources"> & { sources: string }>(
-      "SELECT id, text, category, sources, updated_at FROM profile_facts ORDER BY position ASC",
+    .prepare<[string], Omit<ProfileFact, "sources"> & { sources: string }>(
+      "SELECT id, text, category, sources, updated_at FROM profile_facts WHERE owner = ? ORDER BY position ASC",
     )
-    .all()
+    .all(owner)
     .map((r) => ({ ...r, sources: j<string[]>(r.sources, []) }));
 }
 
-/** Replace the whole profile atomically, in the given order. */
-export function replaceProfileFacts(facts: Array<Pick<ProfileFact, "text" | "category" | "sources">>): ProfileFact[] {
+/** Replace this owner's whole profile atomically, in the given order. */
+export function replaceProfileFacts(
+  owner: string,
+  facts: Array<Pick<ProfileFact, "text" | "category" | "sources">>,
+): ProfileFact[] {
   const conn = getDb();
   const now = Date.now();
   const insert = conn.prepare(
-    "INSERT INTO profile_facts (id, position, text, category, sources, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+    "INSERT INTO profile_facts (id, owner, position, text, category, sources, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
   );
   conn.transaction(() => {
-    conn.prepare("DELETE FROM profile_facts").run();
+    conn.prepare("DELETE FROM profile_facts WHERE owner = ?").run(owner);
     facts.forEach((f, i) => {
       const text = f.text.trim();
-      if (text) insert.run(randomUUID(), i, text, f.category || "other", JSON.stringify(f.sources ?? []), now);
+      if (text) insert.run(randomUUID(), owner, i, text, f.category || "other", JSON.stringify(f.sources ?? []), now);
     });
   })();
-  return listProfileFacts();
+  return listProfileFacts(owner);
 }

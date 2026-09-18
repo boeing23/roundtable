@@ -53,6 +53,17 @@ These are **pay-per-use developer API keys**, not ChatGPT Plus / Claude Pro / Ge
 
 Models are configured in [`lib/models.ts`](lib/models.ts) — swap in whichever ones your keys can reach.
 
+## From your phone, or with a few people
+
+Roundtable is multi-user: each person gets their own topics, buckets and profile, keyed to the identity a trusted proxy supplies. The simplest setup is Tailscale — a private URL for your devices, no public exposure, no passwords:
+
+```bash
+npm run dev
+tailscale serve --bg --http=80 3000   # prints your private URL
+```
+
+Set `PRIMARY_USER` in `.env.local` to your own Tailscale login so your laptop and phone share one workspace, then share the machine from the Tailscale admin console to invite someone. Full instructions, and the reasons the app binds to `127.0.0.1` and must never go behind Tailscale Funnel, are in [REMOTE.md](REMOTE.md).
+
 ---
 
 ## How it works
@@ -77,6 +88,8 @@ Stack: Next.js 16, React 19, Tailwind 4, better-sqlite3, official Anthropic/Open
 ## Privacy
 
 Your conversations, buckets and profile stay in a local SQLite file. What leaves your machine is only what a model needs for a given request, sent straight to that provider. Your profile goes to every model you talk to, so leave out anything you'd rather they not have. Solo threads are never shared behind your back — the app only sends what you ticked.
+
+There is no login built into the app: it trusts an identity header from whatever proxy sits in front of it. That's safe behind Tailscale on `127.0.0.1`, and unsafe if you expose the port directly. Anyone you invite also spends your API keys.
 
 ---
 

@@ -3,6 +3,7 @@ import { listProfileFacts, setProfileSource } from "@/lib/db";
 import { utilityModel } from "@/lib/models";
 import { mergePrompt, parseMergeDraft, PROFILE_SOURCES } from "@/lib/profile";
 import { completeModel } from "@/lib/providers";
+import { currentUser } from "@/lib/user";
 
 /**
  * POST { sources: { chatgpt?, claude?, gemini? } }
@@ -11,11 +12,12 @@ import { completeModel } from "@/lib/providers";
  */
 export async function POST(req: Request) {
   const { sources = {} } = (await req.json()) as { sources?: Record<string, string> };
+  const owner = currentUser(req);
   for (const s of PROFILE_SOURCES) {
-    if (typeof sources[s.id] === "string") setProfileSource(s.id, sources[s.id]);
+    if (typeof sources[s.id] === "string") setProfileSource(owner, s.id, sources[s.id]);
   }
 
-  const existing = listProfileFacts();
+  const existing = listProfileFacts(owner);
   const hasDumps = PROFILE_SOURCES.some((s) => sources[s.id]?.trim());
   if (!hasDumps && existing.length === 0) {
     return NextResponse.json({ error: "Paste at least one memory dump first" }, { status: 400 });

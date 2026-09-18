@@ -132,10 +132,10 @@ function mergeAdjacent(turns: TimedTurn[]): TimedTurn[] {
 
 // ---------- system prompt ----------
 
-function relatedBackground(topic: Topic): string {
+function relatedBackground(topic: Topic, owner: string): string {
   const lines: string[] = [];
   for (const id of topic.context_topic_ids) {
-    const t = getTopic(id);
+    const t = getTopic(id, owner);
     const s = latestSummary(id);
     if (!t || !s) continue;
     lines.push(
@@ -145,7 +145,7 @@ function relatedBackground(topic: Topic): string {
   return lines.join("\n\n");
 }
 
-export function systemPromptFor(topic: Topic, self: ModelDef, compacted: string | null): string {
+export function systemPromptFor(topic: Topic, owner: string, self: ModelDef, compacted: string | null): string {
   const others = MODELS.filter((m) => m.id !== self.id)
     .map((m) => m.name)
     .join(", ");
@@ -156,9 +156,9 @@ Treat shared material as context and peers' views: absorb the facts, engage with
 Be direct and concrete. Prefer a clear recommendation over a survey of options.`,
   ];
   // Profile before topic background: it changes rarely, so it stays in the cached prefix.
-  const profile = renderProfile(listProfileFacts());
+  const profile = renderProfile(listProfileFacts(owner));
   if (profile) sections.push(profile);
-  const bg = relatedBackground(topic);
+  const bg = relatedBackground(topic, owner);
   if (bg) sections.push(`## Background: the user's related past topics and decisions\n\n${bg}`);
   if (compacted) sections.push(`## Earlier in this conversation (summarized)\n\n${compacted}`);
   return sections.join("\n\n");
@@ -185,9 +185,10 @@ async function summarize(previous: string | null, turns: TimedTurn[], self: Mode
  */
 export async function buildContext(
   topicId: string,
+  owner: string,
   modelId: string,
 ): Promise<{ system: string; messages: ChatTurn[]; tokens: number }> {
-  const topic = getTopic(topicId);
+  const topic = getTopic(topicId, owner);
   if (!topic) throw new Error("Topic not found");
   const self = getModel(modelId);
 
@@ -210,7 +211,7 @@ export async function buildContext(
   // Providers require the first turn to be from the user.
   while (turns.length && turns[0].role !== "user") turns = turns.slice(1);
 
-  const system = systemPromptFor(topic, self, compaction?.summary ?? null);
+  const system = systemPromptFor(topic, owner, self, compaction?.summary ?? null);
   return {
     system,
     messages: turns.map(({ role, text }) => ({ role, text })),

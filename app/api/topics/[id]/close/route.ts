@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getTopic, insertSummary, listMessages, latestSummary, updateTopic } from "@/lib/db";
 import { MODELS, utilityModel } from "@/lib/models";
 import { completeModel } from "@/lib/providers";
+import { currentUser } from "@/lib/user";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -23,9 +24,9 @@ function fullTranscript(topicId: string): string {
 }
 
 /** POST: draft a bucket (summary + decision) from the whole topic. Nothing is saved. */
-export async function POST(_req: Request, { params }: Ctx) {
+export async function POST(req: Request, { params }: Ctx) {
   const { id } = await params;
-  const topic = getTopic(id);
+  const topic = getTopic(id, currentUser(req));
   if (!topic) return NextResponse.json({ error: "not found" }, { status: 404 });
 
   const prev = latestSummary(id);
@@ -61,10 +62,11 @@ export async function POST(_req: Request, { params }: Ctx) {
 /** PUT: save the (edited) record as a new bucket version and close the topic. */
 export async function PUT(req: Request, { params }: Ctx) {
   const { id } = await params;
-  if (!getTopic(id)) return NextResponse.json({ error: "not found" }, { status: 404 });
+  const owner = currentUser(req);
+  if (!getTopic(id, owner)) return NextResponse.json({ error: "not found" }, { status: 404 });
   const { summary, decision } = (await req.json()) as { summary: string; decision: string };
   if (!summary?.trim()) return NextResponse.json({ error: "summary required" }, { status: 400 });
   const s = insertSummary(id, summary.trim(), (decision ?? "").trim());
-  const topic = updateTopic(id, { status: "closed" });
+  const topic = updateTopic(id, owner, { status: "closed" });
   return NextResponse.json({ topic, summary: s });
 }

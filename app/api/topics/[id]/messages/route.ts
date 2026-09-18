@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { getTopic, insertMessage, type Attachment, type Channel } from "@/lib/db";
+import { getTopic, insertMessage, listMessages, type Attachment, type Channel } from "@/lib/db";
 import { MODELS } from "@/lib/models";
+import { currentUser } from "@/lib/user";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -16,7 +17,7 @@ type Body = {
 /** Save a user message (solo) or a roundtable turn. Model replies come from /generate. */
 export async function POST(req: Request, { params }: Ctx) {
   const { id } = await params;
-  if (!getTopic(id)) return NextResponse.json({ error: "not found" }, { status: 404 });
+  if (!getTopic(id, currentUser(req))) return NextResponse.json({ error: "not found" }, { status: 404 });
   const b = (await req.json()) as Body;
 
   const known = new Set(MODELS.map((m) => m.id));
@@ -31,6 +32,10 @@ export async function POST(req: Request, { params }: Ctx) {
     return NextResponse.json({ error: "empty message" }, { status: 400 });
   }
 
+  // Shared ids must be messages of this same topic.
+  const inTopic = new Set(listMessages(id).map((m) => m.id));
+  const shared = (b.shared ?? []).filter((mid) => inTopic.has(mid));
+
   const msg = insertMessage({
     topic_id: id,
     channel: b.channel,
@@ -40,7 +45,7 @@ export async function POST(req: Request, { params }: Ctx) {
     content: b.content ?? "",
     attachments: b.attachments ?? [],
     asked: b.channel === "round" ? asked : [],
-    shared: b.channel === "round" ? (b.shared ?? []) : [],
+    shared: b.channel === "round" ? shared : [],
   });
   return NextResponse.json(msg, { status: 201 });
 }

@@ -62,8 +62,23 @@ export function Sidebar({ topics, selected, view, onSelect, onMemory, onProfile,
         <button onClick={onRefresh} className="w-full text-left px-2 py-1 rounded-md text-xs text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-900">
           refresh
         </button>
+        <Who />
       </div>
     </aside>
+  );
+}
+
+/** Whose workspace this is. Only interesting once others reach the app over Tailscale. */
+function Who() {
+  const [me, setMe] = useState<{ user: string; identified: boolean } | null>(null);
+  useEffect(() => {
+    void api.me().then((m) => setMe(m));
+  }, []);
+  if (!me) return null;
+  return (
+    <div className="px-2 pt-1 text-[10px] text-zinc-400 truncate" title={me.identified ? "identified by Tailscale" : "local access"}>
+      {me.identified ? "👤" : "💻"} {me.user}
+    </div>
   );
 }
 

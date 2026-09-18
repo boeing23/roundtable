@@ -49,6 +49,7 @@ export const api = {
   draftClose: (id: string) => post(`/api/topics/${id}/close`, {}).then((r) => json<{ summary: string; decision: string }>(r)),
   saveClose: (id: string, summary: string, decision: string) =>
     post(`/api/topics/${id}/close`, { summary, decision }, "PUT").then((r) => json<{ topic: Topic; summary: Summary }>(r)),
+  me: () => fetch("/api/me").then((r) => json<{ user: string; identified: boolean; isPrimary: boolean }>(r)),
   profile: () => fetch("/api/profile").then((r) => json<{ facts: ProfileFact[]; sources: Record<string, string> }>(r)),
   saveProfile: (facts: DraftFact[]) => post("/api/profile", { facts }, "PUT").then((r) => json<{ facts: ProfileFact[] }>(r)),
   mergeProfile: (sources: Record<string, string>) => post("/api/profile/merge", { sources }).then((r) => json<MergeDraft>(r)),
